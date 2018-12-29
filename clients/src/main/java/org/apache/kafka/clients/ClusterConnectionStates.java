@@ -19,6 +19,8 @@ package org.apache.kafka.clients;
 import java.util.concurrent.ThreadLocalRandom;
 
 import org.apache.kafka.common.errors.AuthenticationException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.net.InetAddress;
 import java.net.UnknownHostException;
@@ -31,6 +33,8 @@ import java.util.Map;
  *
  */
 final class ClusterConnectionStates {
+    private static final Logger log = LoggerFactory.getLogger(ClusterConnectionStates.class);
+
     private final long reconnectBackoffInitMs;
     private final long reconnectBackoffMaxMs;
     private final static int RECONNECT_BACKOFF_EXP_BASE = 2;
@@ -116,8 +120,8 @@ final class ClusterConnectionStates {
             connectionState.state = ConnectionState.CONNECTING;
             connectionState.moveToNextAddress();
         } else {
-            nodeState.put(id, new NodeConnectionState(ConnectionState.CONNECTING, now,
-                this.reconnectBackoffInitMs, ClientUtils.resolve(host, clientDnsLookup)));
+            List<InetAddress> addresses = ClientUtils.resolve(host, clientDnsLookup);
+            nodeState.put(id, new NodeConnectionState(ConnectionState.CONNECTING, now, this.reconnectBackoffInitMs, host, addresses, clientDnsLookup));
         }
     }
 
@@ -343,13 +347,16 @@ final class ClusterConnectionStates {
         long reconnectBackoffMs;
         // Connection is being throttled if current time < throttleUntilTimeMs.
         long throttleUntilTimeMs;
-        private final List<InetAddress> addresses;
+        private List<InetAddress> addresses;
         private int index = 0;
+        private String host;
+        private final ClientDnsLookup clientDnsLookup;
 
-        public NodeConnectionState(ConnectionState state, long lastConnectAttempt, long reconnectBackoffMs, 
-                List<InetAddress> addresses) {
+        NodeConnectionState(ConnectionState state, long lastConnectAttempt, long reconnectBackoffMs, String host, List<InetAddress> addresses, ClientDnsLookup clientDnsLookup) {
             this.state = state;
             this.addresses = addresses;
+            this.host = host;
+            this.clientDnsLookup = clientDnsLookup;
             this.authenticationException = null;
             this.lastConnectAttemptMs = lastConnectAttempt;
             this.failedAttempts = 0;
@@ -357,14 +364,21 @@ final class ClusterConnectionStates {
             this.throttleUntilTimeMs = 0;
         }
 
-        public InetAddress currentAddress() {
+        InetAddress currentAddress() {
+            if (index == 0) {
+                try {
+                    addresses = ClientUtils.resolve(host, clientDnsLookup);
+                } catch (UnknownHostException e) {
+                    log.warn("Unable to refresh DNS entry for {} due to {}", host, e.getMessage());
+                }
+            }
             return addresses.get(index);
         }
 
         /*
          * implementing a ring buffer with the addresses
          */
-        public void moveToNextAddress() {
+        void moveToNextAddress() {
             index = (index + 1) % addresses.size();
         }
 
